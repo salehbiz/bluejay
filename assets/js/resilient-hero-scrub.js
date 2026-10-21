@@ -1,8 +1,11 @@
 /**
- * 60 fps motion-interpolated hero sequence.
- * Cached low-resolution frames support immediate reverse playback;
- * a bounded sharp-frame window keeps image decoding and memory controlled.
- * Contiguous frame selection and fractional blending avoid missing-frame jumps.
+ * 60 fps hero sequence with a two-tier progressive loader.
+ * 1. The poster paints first (preloaded from <head> and the Link header).
+ * 2. A small preview tier streams in stride-pyramid order (8 -> 4 -> 2 -> 1),
+ *    so the whole scroll range is scrubbable within a second or two.
+ * 3. Sharp frames are fetched only ahead of / around the playhead and replace
+ *    the preview as they arrive.
+ * Decoded bitmaps live in a small sliding window to keep memory bounded.
  */
 
 (function () {
@@ -11,10 +14,7 @@
   const FRAME_COUNT = 895;
   const SCROLL_LENGTH_VH = 1100;
   const FOLLOW_TIME_MS = 95;
-
-  function getFrameTier() {
-    return {dir: window.innerWidth < 768 ? 'hq60-mobile' : 'qhd60-desktop', ext:'jpg'};
-  }
+  const BASE = '/frames/hero60';
 
   function initResilientHeroScrub() {
     const heroSection = document.querySelector('.section.mod--hero');
@@ -24,19 +24,16 @@
     if (!heroSection || !canvas) return;
 
     // Session-locked tier resolution
-    const tier = getFrameTier();
-    let isMobile = window.innerWidth < 768;
+    const isMobile = window.innerWidth < 768;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const conn = navigator.connection || {};
+    const slow = conn.saveData || /(^|-)2g|3g/.test(conn.effectiveType || '');
 
     const padFrame = (i) => String(i).padStart(4, '0');
-    const framePath = (i) => `/frames/hero/${tier.dir}/${padFrame(i)}.${tier.ext}`;
-    const fallbackFramePath = tier.dir === 'desktop-hq'
-      ? (i) => `/frames/hero/desktop/${padFrame(i)}.webp`
-      : null;
-    const posterUrl = framePath(1);
-    if (posterImg && posterImg.getAttribute('src') !== posterUrl) {
-      posterImg.src = posterUrl;
-    }
+    const posterUrl = `${BASE}/${isMobile ? 'mobile-poster' : 'poster'}.webp`;
+
+    // Older builds copied every frame into Cache Storage; free that space.
+    try { if ('caches' in window) caches.delete('frame-cache-hq-v2'); } catch (e) {}
 
     if (reduced) {
       const lqip = document.getElementById('hero-lqip');
@@ -45,11 +42,30 @@
       return;
     }
 
-    // State & Caches — Original-quality frames only (no blurry 320x180 preview tier)
-    const realBlobs = new Map();
-    const realInFlight = new Set();
-    const realBitmaps = new Map();
-    const decodingFrames = new Set();
+    function makeTier(dir, opts) {
+      return Object.assign({
+        url: (i) => `${BASE}/${dir}/${padFrame(i)}.webp`,
+        blobs: new Map(),
+        inFlight: new Set(),
+        bitmaps: new Map(),
+        decoding: new Set(),
+        pending: 0
+      }, opts);
+    }
+
+    // behind/ahead: decoded-bitmap window around the playhead (in scroll direction).
+    // fetchAhead/fetchBehind: how far the sharp tier prefetches.
+    const preview = makeTier(isMobile ? 'preview-mobile' : 'preview-desktop', {
+      behind: 30, ahead: 50, maxInFlight: 8
+    });
+    const full = makeTier(isMobile ? 'mobile' : 'desktop', {
+      behind: isMobile ? 8 : 6,
+      ahead: isMobile ? 16 : 14,
+      maxInFlight: isMobile ? 6 : 8,
+      fetchBehind: 20,
+      fetchAhead: slow ? 30 : (isMobile ? 90 : 150),
+      keepBlobs: 320
+    });
 
     let updateHeroUI = () => {};
     let playhead = 1;
@@ -57,22 +73,21 @@
     let ready = false;
     let posterLoaded = false;
     let hasDrawnFirst = false;
-    let lastDrawn = { frame: -1, quality: null };
+    let lastRenderKey = '';
 
-    // Resize canvas at native devicePixelRatio for full original crispness
     let lastWidth = window.innerWidth;
     let lastHeight = window.innerHeight;
     let lastOrientation = lastWidth > lastHeight ? 'landscape' : 'portrait';
 
     function resizeCanvas() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const rect = canvas.getBoundingClientRect();
       const w = Math.max(1, Math.round((rect.width || window.innerWidth) * dpr));
       const h = Math.max(1, Math.round((rect.height || window.innerHeight) * dpr));
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
-        lastDrawn = { frame: -1, quality: null };
+        lastRenderKey = '';
       }
     }
 
@@ -81,11 +96,7 @@
       const w = window.innerWidth;
       const h = window.innerHeight;
       const o = w > h ? 'landscape' : 'portrait';
-      const widthDiff = Math.abs(w - lastWidth);
-      const heightDiff = Math.abs(h - lastHeight);
-      const orientationChanged = o !== lastOrientation;
-      isMobile = w < 768;
-      if (widthDiff > 10 || heightDiff > 150 || orientationChanged) {
+      if (Math.abs(w - lastWidth) > 10 || Math.abs(h - lastHeight) > 150 || o !== lastOrientation) {
         lastWidth = w;
         lastHeight = h;
         lastOrientation = o;
@@ -93,205 +104,156 @@
       }
     });
 
-    // Stride Pyramid Order: 8 -> 4 -> 2 -> 1 for full-resolution frames
     const strideRank = new Uint8Array(FRAME_COUNT + 1);
     for (let i = 1; i <= FRAME_COUNT; i++) {
-      if ((i - 1) % 8 === 0) strideRank[i] = 0;
-      else if ((i - 1) % 4 === 0) strideRank[i] = 1;
-      else if ((i - 1) % 2 === 0) strideRank[i] = 2;
-      else strideRank[i] = 3;
+      const k = i - 1;
+      strideRank[i] = k % 8 === 0 ? 0 : k % 4 === 0 ? 1 : k % 2 === 0 ? 2 : 3;
     }
 
-    const requiredForReady = isMobile ? 3 : 6;
-    const DECODE_WIN = isMobile ? 28 : 48;
+    const direction = () => (target >= playhead ? 1 : -1);
+    const inWindow = (tier, i) => {
+      const c = Math.round(playhead);
+      const t = Math.round(target);
+      const dir = direction();
+      const lo = Math.min(c, t) - (dir > 0 ? tier.behind : tier.ahead);
+      const hi = Math.max(c, t) + (dir > 0 ? tier.ahead : tier.behind);
+      return i >= lo && i <= hi;
+    };
 
-    async function fetchFrame(url, priority) {
-      let cache = null;
-      try {
-        if ('caches' in window) {
-          cache = await caches.open('frame-cache-hq-v2');
-          const matched = await cache.match(url);
-          if (matched) return await matched.blob();
-        }
-      } catch (e) {}
-
-      const res = await fetch(url, { priority });
-      if (!res.ok) throw new Error(`Status ${res.status}`);
-      if (cache) {
-        try {
-          cache.put(url, res.clone());
-        } catch (e) {}
-      }
-      return await res.blob();
-    }
-
-    function decodeFrame(frameNum) {
-      if (realBitmaps.has(frameNum) || decodingFrames.has(frameNum) || !realBlobs.has(frameNum)) return;
-      decodingFrames.add(frameNum);
-      createImageBitmap(realBlobs.get(frameNum))
+    function decodeFrame(tier, i) {
+      if (tier.bitmaps.has(i) || tier.decoding.has(i) || !tier.blobs.has(i)) return;
+      tier.decoding.add(i);
+      createImageBitmap(tier.blobs.get(i))
         .then((bmp) => {
-          decodingFrames.delete(frameNum);
-          const curCenter = Math.round(playhead);
-          const curTarget = Math.round(target);
-          const isKeyframe = (frameNum - 1) % 16 === 0 || frameNum === 1 || frameNum === FRAME_COUNT;
-          if (
-            isKeyframe ||
-            Math.abs(frameNum - curCenter) <= DECODE_WIN ||
-            Math.abs(frameNum - curTarget) <= DECODE_WIN
-          ) {
-            realBitmaps.set(frameNum, bmp);
-            if (realBitmaps.size >= requiredForReady) ready = true;
+          tier.decoding.delete(i);
+          if (i === 1 || inWindow(tier, i)) {
+            tier.bitmaps.set(i, bmp);
+            ready = true;
           } else {
             bmp.close();
           }
         })
-        .catch(() => decodingFrames.delete(frameNum));
+        .catch(() => tier.decoding.delete(i));
+    }
+
+    function fetchInto(tier, i, priority) {
+      tier.inFlight.add(i);
+      tier.pending++;
+      fetch(tier.url(i), { priority })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+          return res.blob();
+        })
+        .then((blob) => {
+          tier.pending--;
+          tier.blobs.set(i, blob);
+          if (inWindow(tier, i)) decodeFrame(tier, i);
+          pump();
+        })
+        .catch(() => {
+          tier.pending--;
+          tier.inFlight.delete(i);
+          setTimeout(pump, 800);
+        });
     }
 
     function pump() {
       if (!posterLoaded) return;
-      if (realBlobs.size === FRAME_COUNT) return;
-
-      let inFlightReal = realInFlight.size - realBlobs.size;
-      const maxRealInFlight = isMobile ? 10 : 16;
       const center = Math.round(playhead);
-      const tgt = Math.round(target);
-      const diff = target - playhead;
+      const dir = direction();
 
-      while (inFlightReal < maxRealInFlight) {
-        let bestFrame = null;
-        let bestScore = Infinity;
+      // Sharp tier: nearest-first around the playhead, biased in scroll direction.
+      let slots = full.maxInFlight - full.pending;
+      for (let d = 0; slots > 0 && d <= Math.max(full.fetchAhead, full.fetchBehind); d++) {
+        for (const i of [center + dir * d, center - dir * d]) {
+          if (i < 1 || i > FRAME_COUNT || full.inFlight.has(i)) continue;
+          const ahead = (i - center) * dir >= 0;
+          if (d > (ahead ? full.fetchAhead : full.fetchBehind)) continue;
+          fetchInto(full, i, d <= 12 ? 'high' : 'low');
+          if (--slots <= 0) break;
+        }
+      }
 
-        for (let i = 1; i <= FRAME_COUNT; i++) {
-          if (realInFlight.has(i)) continue;
-          const distPlayhead = Math.abs(i - center);
-          const distTarget = Math.abs(i - tgt);
-          const minDist = Math.min(distPlayhead, distTarget);
-          const dirBias = diff >= 0 ? (i >= center ? 0.65 : 1.2) : (i <= center ? 0.65 : 1.2);
-          // Immediate window around playhead/target gets highest priority in contiguous order;
-          // outside window uses stride pyramid so scrubbing anywhere has sharp keyframes ready.
-          let score;
-          if (minDist <= DECODE_WIN) {
-            score = minDist * dirBias;
-          } else {
-            score = 1000 + strideRank[i] * 1000 + minDist * dirBias;
-          }
-          if (score < bestScore) {
-            bestScore = score;
-            bestFrame = i;
+      // Preview tier: stride pyramid over the whole sequence, nearest-first within each level.
+      slots = preview.maxInFlight - preview.pending;
+      if (preview.inFlight.size >= FRAME_COUNT) slots = 0;
+      for (let rank = 0; slots > 0 && rank < 4; rank++) {
+        for (let d = 0; slots > 0 && d < FRAME_COUNT; d++) {
+          for (const i of d === 0 ? [center] : [center + dir * d, center - dir * d]) {
+            if (i < 1 || i > FRAME_COUNT || strideRank[i] !== rank || preview.inFlight.has(i)) continue;
+            fetchInto(preview, i, rank === 0 ? 'high' : 'low');
+            if (--slots <= 0) break;
           }
         }
-
-        if (bestFrame === null) break;
-
-        const frameNum = bestFrame;
-        realInFlight.add(frameNum);
-        inFlightReal++;
-
-        const realUrl = framePath(frameNum);
-        const prio = Math.abs(frameNum - center) <= 12 ? 'high' : 'low';
-
-        fetchFrame(realUrl, prio)
-          .then((blob) => {
-            realBlobs.set(frameNum, blob);
-            const curCenter = Math.round(playhead);
-            const curTarget = Math.round(target);
-            const isKeyframe = (frameNum - 1) % 16 === 0 || frameNum === 1 || frameNum === FRAME_COUNT;
-            if (
-              isKeyframe ||
-              Math.abs(frameNum - curCenter) <= DECODE_WIN ||
-              Math.abs(frameNum - curTarget) <= DECODE_WIN
-            ) {
-              decodeFrame(frameNum);
-            }
-            pump();
-          })
-          .catch(() => {
-            realInFlight.delete(frameNum);
-            setTimeout(pump, 500);
-          });
       }
     }
 
-    // Sliding Decode Window for Original-Quality Bitmaps
-    function decodeFrames(center) {
-      const tgt = Math.round(target);
-      const lo = Math.max(1, Math.min(center, tgt) - DECODE_WIN);
-      const hi = Math.min(FRAME_COUNT, Math.max(center, tgt) + DECODE_WIN);
-
-      for (const [k, bmp] of realBitmaps) {
-        const isKeyframe = (k - 1) % 16 === 0 || k === 1 || k === FRAME_COUNT;
-        if ((k < lo || k > hi) && !isKeyframe) {
+    function maintain(tier, budget) {
+      for (const [k, bmp] of tier.bitmaps) {
+        if (k !== 1 && !inWindow(tier, k)) {
           bmp.close();
-          realBitmaps.delete(k);
+          tier.bitmaps.delete(k);
         }
       }
-
-      let budget = Math.max(0, (isMobile ? 6 : 10) - decodingFrames.size);
-      for (let dist = 0; dist <= DECODE_WIN && budget > 0; dist++) {
-        for (const p of [center + dist, center - dist, tgt + dist, tgt - dist]) {
-          if (p < 1 || p > FRAME_COUNT) continue;
-          if (!realBitmaps.has(p) && realBlobs.has(p) && !decodingFrames.has(p)) {
-            decodeFrame(p);
+      if (tier.keepBlobs) {
+        const c = Math.round(playhead);
+        for (const k of tier.blobs.keys()) {
+          if (Math.abs(k - c) > tier.keepBlobs && !tier.decoding.has(k)) {
+            tier.blobs.delete(k);
+            tier.inFlight.delete(k); // refetch later comes from the HTTP cache
+          }
+        }
+      }
+      const c = Math.round(playhead);
+      const dir = direction();
+      budget -= tier.decoding.size;
+      for (let d = 0; budget > 0 && d <= Math.max(tier.ahead, tier.behind); d++) {
+        for (const i of [c + dir * d, c - dir * d]) {
+          if (budget <= 0) break;
+          if (i < 1 || i > FRAME_COUNT || !inWindow(tier, i)) continue;
+          if (!tier.bitmaps.has(i) && tier.blobs.has(i) && !tier.decoding.has(i)) {
+            decodeFrame(tier, i);
             budget--;
-            if (budget <= 0) break;
           }
         }
       }
     }
 
-    function findNearestSharpFrame(desired) {
-      const rounded = Math.max(1, Math.min(FRAME_COUNT, Math.round(desired)));
-      if (realBitmaps.has(rounded)) return rounded;
-      for (let d = 1; d <= FRAME_COUNT; d++) {
-        if (rounded - d >= 1 && realBitmaps.has(rounded - d)) return rounded - d;
-        if (rounded + d <= FRAME_COUNT && realBitmaps.has(rounded + d)) return rounded + d;
+    function nearest(tier, desired, maxDist) {
+      for (let d = 0; d <= maxDist; d++) {
+        if (tier.bitmaps.has(desired - d)) return desired - d;
+        if (tier.bitmaps.has(desired + d)) return desired + d;
       }
       return null;
     }
 
-    const gpuRenderer=window.createHeroRenderer?.(canvas);
-    canvas.addEventListener('hero-renderer-restored',()=>{lastRenderKey='';});
-    // GPU compositing with Canvas fallback — always renders original-quality bitmaps.
-    function draw(frame, nextFrame = frame, blend = 0) {
-      const bmp = realBitmaps.get(frame);
-      if (!bmp) return;
-      const nextBmp = realBitmaps.get(nextFrame) || bmp;
-      const actualBlend = realBitmaps.has(nextFrame) && nextFrame !== frame ? blend : 0;
+    // Exact sharp frame > exact preview > sharp within 2 > nearest preview > nearest sharp.
+    function pickFrame(desired) {
+      if (full.bitmaps.has(desired)) return [full, desired];
+      if (preview.bitmaps.has(desired)) return [preview, desired];
+      let f = nearest(full, desired, 2);
+      if (f !== null) return [full, f];
+      f = nearest(preview, desired, FRAME_COUNT);
+      if (f !== null) return [preview, f];
+      f = nearest(full, desired, FRAME_COUNT);
+      return f !== null ? [full, f] : null;
+    }
+
+    const gpuRenderer = window.createHeroRenderer?.(canvas);
+    canvas.addEventListener('hero-renderer-restored', () => { lastRenderKey = ''; });
+
+    function draw(bmp) {
       if (gpuRenderer) {
-        if(!gpuRenderer.draw(bmp, nextBmp, actualBlend)) return;
+        if (!gpuRenderer.draw(bmp, bmp, 0)) return;
       } else {
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return;
-
-      if (canvas.width === 0 || canvas.height === 0) resizeCanvas();
-
-      const cr = canvas.width / canvas.height;
-      const ir = bmp.width / bmp.height;
-      let dw = canvas.width, dh = canvas.height, dx = 0, dy = 0;
-      if (ir > cr) {
-        dh = canvas.height;
-        dw = dh * ir;
-        dx = (canvas.width - dw) / 2;
-      } else {
-        dw = canvas.width;
-        dh = dw / ir;
-        dy = (canvas.height - dh) / 2;
-      }
-
-      ctx.globalAlpha = 1;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(bmp, dx, dy, dw, dh);
-      // Fractional frames avoid visible stepping during very slow scrolling.
-      if (actualBlend > 0) {
-        const scale = Math.max(canvas.width / nextBmp.width, canvas.height / nextBmp.height);
-        const nw = nextBmp.width * scale, nh = nextBmp.height * scale;
-        ctx.globalAlpha = actualBlend;
-        ctx.drawImage(nextBmp, (canvas.width-nw)/2, (canvas.height-nh)/2, nw, nh);
-        ctx.globalAlpha = 1;
-      }
-
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) return;
+        if (canvas.width === 0 || canvas.height === 0) resizeCanvas();
+        const scale = Math.max(canvas.width / bmp.width, canvas.height / bmp.height);
+        const dw = bmp.width * scale, dh = bmp.height * scale;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bmp, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
       }
 
       if (!hasDrawnFirst) {
@@ -312,7 +274,6 @@
     // Time-based following behaves consistently on 60/120Hz displays.
     let lastTime = 0;
     let lastMaintenance = 0;
-    let lastRenderKey = '';
     function loop(now) {
       const dt = Math.min(50, now - (lastTime || now));
       lastTime = now;
@@ -322,15 +283,18 @@
         playhead = Math.max(1, Math.min(FRAME_COUNT, playhead + step));
         updateHeroUI((playhead - 1) / (FRAME_COUNT - 1));
 
-        const desiredFrame = Math.round(playhead);
-        const frame = realBitmaps.has(desiredFrame) ? desiredFrame : findNearestSharpFrame(desiredFrame);
-        const key = `${frame}:${canvas.width}:${canvas.height}`;
-        if (frame !== null && key !== lastRenderKey) {
-          draw(frame, frame, 0);
-          lastRenderKey = key;
+        const pick = pickFrame(Math.round(playhead));
+        if (pick) {
+          const [tier, frame] = pick;
+          const key = `${tier === full ? 'f' : 'p'}${frame}:${canvas.width}:${canvas.height}`;
+          if (key !== lastRenderKey) {
+            draw(tier.bitmaps.get(frame));
+            lastRenderKey = key;
+          }
         }
         if (now - lastMaintenance > 24) {
-          decodeFrames(Math.round(playhead));
+          maintain(full, isMobile ? 3 : 4);
+          maintain(preview, 6);
           pump();
           lastMaintenance = now;
         }
@@ -339,13 +303,13 @@
     }
     requestAnimationFrame(loop);
 
-    // Seed Frame 1 from Poster Image Pre-decode
+    // Seed frame 1 from the poster, which is byte-identical to the sharp frame 1.
     const seedImg = new Image();
     seedImg.src = posterUrl;
     seedImg.onload = async () => {
       try {
-        const bmp = await createImageBitmap(seedImg);
-        realBitmaps.set(1, bmp);
+        full.bitmaps.set(1, await createImageBitmap(seedImg));
+        full.inFlight.add(1);
         ready = true;
       } catch (e) {}
       posterLoaded = true;
@@ -353,6 +317,7 @@
     };
     seedImg.onerror = () => {
       posterLoaded = true;
+      ready = true;
       pump();
     };
 

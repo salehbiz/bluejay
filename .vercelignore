@@ -28,3 +28,12 @@ frames/hero/preview-mobile/
 frames/hero/preview-qhd60/
 frames/hero/smooth-desktop/
 frames/hero/smooth-mobile/
+# Old hero tiers: the site now serves frames/hero60 (see scripts/encode-hero.sh)
+frames/hero/
+scripts/
+assets/bluejay/*-original.*
+assets/vendor/jquery-3.5.1.min.js
+assets/vendor/remodal*
+assets/vendor/swiper-bundle.*
+assets/vendor/split-type.js
+assets/vendor/SmoothScroll.min.js
