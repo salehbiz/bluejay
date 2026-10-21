@@ -4,6 +4,7 @@ node_modules/
 sharp/
 tmp/
 server.js
+package.json
 *.pdf
 **/*.pdf
 *.mp4
