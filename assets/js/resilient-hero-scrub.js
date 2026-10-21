@@ -56,16 +56,43 @@
     // behind/ahead: decoded-bitmap window around the playhead (in scroll direction).
     // fetchAhead/fetchBehind: how far the sharp tier prefetches.
     const preview = makeTier(isMobile ? 'preview-mobile' : 'preview-desktop', {
-      behind: 30, ahead: 50, maxInFlight: 8
+      behind: 30, ahead: 80, maxInFlight: 6
     });
     const full = makeTier(isMobile ? 'mobile' : 'desktop', {
       behind: isMobile ? 8 : 6,
       ahead: isMobile ? 16 : 14,
-      maxInFlight: isMobile ? 6 : 8,
       fetchBehind: 20,
-      fetchAhead: slow ? 30 : (isMobile ? 90 : 150),
+      fetchAhead: isMobile ? 90 : 150,
       keepBlobs: 320
     });
+    // Bytes/ms a sharp frame sequence needs to keep up with a brisk scroll; below
+    // this the sharp tier only fills in where the visitor slows down or stops.
+    const FAST_BW = isMobile ? 1200 : 2500;
+
+    // Measured throughput: bytes received over time spent with requests in flight.
+    let bwBytes = 0;
+    let bwMs = 0;
+    let lastBwCheck = 0;
+    const bandwidth = () => (bwMs > 400 ? bwBytes / bwMs : 0);
+    function trackBandwidth(now) {
+      if (lastBwCheck && full.pending + preview.pending > 0) bwMs += now - lastBwCheck;
+      lastBwCheck = now;
+      if (bwMs > 4000) { bwBytes *= 0.5; bwMs *= 0.5; } // favour recent conditions
+    }
+    const isFast = () => !slow && bandwidth() > FAST_BW;
+
+    // Scroll speed in frames/ms, smoothed.
+    let velocity = 0;
+    let lastTarget = 1;
+    let lastVelocityAt = 0;
+    function trackVelocity(now) {
+      if (lastVelocityAt) {
+        const v = Math.abs(target - lastTarget) / Math.max(1, now - lastVelocityAt);
+        velocity += (v - velocity) * 0.2;
+      }
+      lastTarget = target;
+      lastVelocityAt = now;
+    }
 
     let updateHeroUI = () => {};
     let playhead = 1;
@@ -146,6 +173,7 @@
         })
         .then((blob) => {
           tier.pending--;
+          bwBytes += blob.size;
           tier.blobs.set(i, blob);
           if (inWindow(tier, i)) decodeFrame(tier, i);
           pump();
@@ -157,33 +185,49 @@
         });
     }
 
-    function pump() {
-      if (!posterLoaded) return;
+    // Fetch up to `slots` frames of `tier` with strideRank <= maxRank, nearest-first,
+    // limited to `ahead` frames in the scroll direction and `behind` frames against it.
+    function fill(tier, slots, maxRank, ahead, behind, priority) {
       const center = Math.round(playhead);
       const dir = direction();
-
-      // Sharp tier: nearest-first around the playhead, biased in scroll direction.
-      let slots = full.maxInFlight - full.pending;
-      for (let d = 0; slots > 0 && d <= Math.max(full.fetchAhead, full.fetchBehind); d++) {
-        for (const i of [center + dir * d, center - dir * d]) {
-          if (i < 1 || i > FRAME_COUNT || full.inFlight.has(i)) continue;
-          const ahead = (i - center) * dir >= 0;
-          if (d > (ahead ? full.fetchAhead : full.fetchBehind)) continue;
-          fetchInto(full, i, d <= 12 ? 'high' : 'low');
+      for (let d = 0; slots > 0 && d <= Math.max(ahead, behind); d++) {
+        for (const i of d === 0 ? [center] : [center + dir * d, center - dir * d]) {
+          if (i < 1 || i > FRAME_COUNT || strideRank[i] > maxRank || tier.inFlight.has(i)) continue;
+          if (d > ((i - center) * dir >= 0 ? ahead : behind)) continue;
+          fetchInto(tier, i, priority);
           if (--slots <= 0) break;
         }
       }
+      return slots;
+    }
 
-      // Preview tier: stride pyramid over the whole sequence, nearest-first within each level.
-      slots = preview.maxInFlight - preview.pending;
-      if (preview.inFlight.size >= FRAME_COUNT) slots = 0;
-      for (let rank = 0; slots > 0 && rank < 4; rank++) {
-        for (let d = 0; slots > 0 && d < FRAME_COUNT; d++) {
-          for (const i of d === 0 ? [center] : [center + dir * d, center - dir * d]) {
-            if (i < 1 || i > FRAME_COUNT || strideRank[i] !== rank || preview.inFlight.has(i)) continue;
-            fetchInto(preview, i, rank === 0 ? 'high' : 'low');
-            if (--slots <= 0) break;
-          }
+    function pump() {
+      if (!posterLoaded) return;
+      const fast = isFast();
+      const resting = velocity < 0.012 && Math.abs(target - playhead) < 2;
+
+      // Sharp tier. On a fast link prefetch well ahead of the playhead. On a slow one,
+      // sharpen only where the visitor stops, so it never starves the preview.
+      if (fast) {
+        fill(full, (isMobile ? 6 : 8) - full.pending, 3, full.fetchAhead, full.fetchBehind, 'high');
+      } else if (resting || preview.inFlight.size >= FRAME_COUNT) {
+        fill(full, 2 - full.pending, 3, 6, 2, 'high');
+      }
+
+      // Preview tier carries motion. Cover the stretch the visitor is about to scroll
+      // into at 1/4 then 1/2 density first (an even 15-30 fps beats 8-frame jumps),
+      // then the whole sequence at 1/8 so a jump anywhere has something to show.
+      // While a slow link fetches the sharp frame under a resting view, leave it the bandwidth.
+      const sharpHere = full.blobs.has(Math.round(playhead));
+      const previewCap = !fast && resting && !sharpHere ? 1 : preview.maxInFlight;
+      let slots = previewCap - preview.pending;
+      if (preview.inFlight.size < FRAME_COUNT) {
+        const lead = Math.max(40, Math.min(300, Math.round(velocity * 4000)));
+        const passes = [[1, lead, 10], [2, lead, 10], [0, FRAME_COUNT, FRAME_COUNT],
+          [3, lead, 10], [1, FRAME_COUNT, FRAME_COUNT], [3, FRAME_COUNT, FRAME_COUNT]];
+        for (const [rank, ahead, behind] of passes) {
+          if (slots <= 0) break;
+          slots = fill(preview, slots, rank, ahead, behind, ahead < FRAME_COUNT ? 'high' : 'low');
         }
       }
     }
@@ -274,6 +318,8 @@
     // Time-based following behaves consistently on 60/120Hz displays.
     let lastTime = 0;
     let lastMaintenance = 0;
+    // ?herodebug records [desiredFrame, drawnFrame, isSharp] per animation frame.
+    const debugLog = /herodebug/.test(location.search) ? (window.__heroLog = []) : null;
     function loop(now) {
       const dt = Math.min(50, now - (lastTime || now));
       lastTime = now;
@@ -284,6 +330,7 @@
         updateHeroUI((playhead - 1) / (FRAME_COUNT - 1));
 
         const pick = pickFrame(Math.round(playhead));
+        if (debugLog) debugLog.push([Math.round(playhead), pick ? pick[1] : 0, pick && pick[0] === full ? 1 : 0]);
         if (pick) {
           const [tier, frame] = pick;
           const key = `${tier === full ? 'f' : 'p'}${frame}:${canvas.width}:${canvas.height}`;
@@ -292,6 +339,8 @@
             lastRenderKey = key;
           }
         }
+        trackVelocity(now);
+        trackBandwidth(now);
         if (now - lastMaintenance > 24) {
           maintain(full, isMobile ? 3 : 4);
           maintain(preview, 6);
