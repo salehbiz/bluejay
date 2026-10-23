@@ -1,18 +1,19 @@
 /**
- * 60 fps hero sequence with a two-tier progressive loader.
+ * 60 fps hero sequence with a bandwidth-adaptive progressive loader.
  * 1. The poster paints first (preloaded from <head> and the Link header).
- * 2. A small preview tier streams in stride-pyramid order (8 -> 4 -> 2 -> 1),
- *    so the whole scroll range is scrubbable within a second or two.
- * 3. Sharp frames are fetched only ahead of / around the playhead and replace
- *    the preview as they arrive.
- * Decoded bitmaps live in a small sliding window to keep memory bounded.
+ * 2. A motion tier streams ahead of the scroll: the sharpest of micro (~5 KB),
+ *    preview, hd and full frames that measured bandwidth can deliver
+ *    fast enough for a brisk scroll. Below full, it streams at 1/4, 1/2, then
+ *    full density so motion stays even instead of jumping.
+ * 3. When the motion tier is not full, the full frame under a resting view is
+ *    fetched first, so the picture sharpens as soon as the visitor stops.
+ * Decoded bitmaps live in small sliding windows to keep memory bounded.
  */
 
 (function () {
   'use strict';
 
   const FRAME_COUNT = 895;
-  const SCROLL_LENGTH_VH = 1100;
   const FOLLOW_TIME_MS = 95;
   const BASE = '/frames/hero60';
 
@@ -53,42 +54,81 @@
       }, opts);
     }
 
-    // behind/ahead: decoded-bitmap window around the playhead (in scroll direction).
-    // fetchAhead/fetchBehind: how far the sharp tier prefetches.
+    // Tiers, sharpest first. kb: average frame size, which decides what the link can
+    // stream. penalty: how many frames of distance a lower tier's exact frame is worth
+    // when choosing what to draw. behind/ahead: decoded-bitmap window around the
+    // playhead (in scroll direction). fetchAhead/fetchBehind: full-tier prefetch reach.
+    const full = makeTier(isMobile ? 'mobile' : 'desktop', {
+      rank: 3, kb: isMobile ? 37.5 : 84, penalty: 0, timeout: 20000,
+      behind: isMobile ? 8 : 6, ahead: isMobile ? 16 : 14,
+      fetchBehind: 20, fetchAhead: isMobile ? 90 : 150, keepBlobs: 320
+    });
+    const hd = makeTier(isMobile ? 'hd-mobile' : 'hd-desktop', {
+      rank: 2, kb: isMobile ? 24 : 47, penalty: 0.5, timeout: 15000,
+      behind: 10, ahead: 24, maxInFlight: 6, keepBlobs: 400
+    });
     const preview = makeTier(isMobile ? 'preview-mobile' : 'preview-desktop', {
+      rank: 1, kb: isMobile ? 8.5 : 18, penalty: 1.6, timeout: 12000,
       behind: 30, ahead: 80, maxInFlight: 6
     });
-    const full = makeTier(isMobile ? 'mobile' : 'desktop', {
-      behind: isMobile ? 8 : 6,
-      ahead: isMobile ? 16 : 14,
-      fetchBehind: 20,
-      fetchAhead: isMobile ? 90 : 150,
-      keepBlobs: 320
+    const micro = makeTier(isMobile ? 'micro-mobile' : 'micro-desktop', {
+      rank: 0, kb: isMobile ? 4.2 : 5.8, penalty: 2.6, timeout: 8000,
+      behind: 40, ahead: 120, maxInFlight: 6
     });
-    // Bytes/ms a sharp frame sequence needs to keep up with a brisk scroll; below
-    // this the sharp tier only fills in where the visitor slows down or stops.
-    const FAST_BW = isMobile ? 1200 : 2500;
+    const ladder = [full, hd, preview, micro];
 
-    // Measured throughput: bytes received over time spent with requests in flight.
-    let bwBytes = 0;
-    let bwMs = 0;
-    let lastBwCheck = 0;
-    const bandwidth = () => (bwMs > 400 ? bwBytes / bwMs : 0);
-    function trackBandwidth(now) {
-      if (lastBwCheck && full.pending + preview.pending > 0) bwMs += now - lastBwCheck;
-      lastBwCheck = now;
-      if (bwMs > 4000) { bwBytes *= 0.5; bwMs *= 0.5; } // favour recent conditions
+    // Measured throughput: bytes over the time bytes were actually arriving (the union
+    // of each response's first-to-last-byte window). Waiting on round trips is left
+    // out, or small frames on a high-latency link would read as a slow link.
+    let transfers = []; // [responseStart, responseEnd, bytes], most recent last
+    let bw = 0;
+    function recordTransfer(e) {
+      if (!e.name.includes(BASE) || !e.transferSize || e.responseEnd - e.responseStart < 1) return;
+      transfers.push([e.responseStart, e.responseEnd, e.encodedBodySize || e.transferSize]);
+      if (transfers.length > 60) transfers = transfers.slice(-60);
+      const spans = transfers.slice().sort((a, b) => a[0] - b[0]);
+      let busy = 0, bytes = 0, from = -1, to = -1;
+      for (const [s, e2, b] of spans) {
+        bytes += b;
+        if (s > to) { busy += to - from; from = s; to = e2; } else to = Math.max(to, e2);
+      }
+      busy += to - from;
+      if (busy > 300) bw = bytes / busy;
     }
-    const isFast = () => !slow && bandwidth() > FAST_BW;
+    try {
+      new PerformanceObserver((list) => list.getEntries().forEach(recordTransfer))
+        .observe({ type: 'resource', buffered: true });
+    } catch (e) {}
+    // Chrome's own estimate (Mbit/s, capped at 10) keeps one low reading from
+    // dragging the tier down; other browsers rely on the measurement alone.
+    const bandwidth = () => (slow ? 0 : Math.max(bw, (conn.downlink || 0) * 125 * 0.7));
 
-    // Scroll speed in frames/ms, smoothed.
+    // The motion tier is the sharpest one the link can stream at the visitor's own
+    // scroll speed: every other frame, with 15% headroom, and never planning for less
+    // than a gentle 20 frames/s of scroll. A recent fast scroll is remembered for a
+    // couple of seconds so the tier doesn't bounce back mid-flick. Stepping down waits
+    // until the link falls well below the current tier's need, so it doesn't flap.
+    // Until there is a measurement this picks micro, which costs little either way.
+    const needs = (tier, fps) => (tier.kb * 1024 * fps) / 1000 / 0.85; // bytes/ms
+    let motion = micro;
+    function motionTier() {
+      const fps = Math.max(10, scrollFps / 2);
+      const now = bandwidth();
+      motion = ladder.find((tier) => now >= needs(tier, fps) * (tier === motion ? 0.7 : 1)) || micro;
+      return motion;
+    }
+
+    // Scroll speed in frames/ms, smoothed; scrollFps is its recent peak in frames/s,
+    // decaying over a couple of seconds.
     let velocity = 0;
+    let scrollFps = 0;
     let lastTarget = 1;
     let lastVelocityAt = 0;
     function trackVelocity(now) {
       if (lastVelocityAt) {
-        const v = Math.abs(target - lastTarget) / Math.max(1, now - lastVelocityAt);
-        velocity += (v - velocity) * 0.2;
+        const dt = Math.max(1, now - lastVelocityAt);
+        velocity += (Math.abs(target - lastTarget) / dt - velocity) * 0.2;
+        scrollFps = Math.max(velocity * 1000, scrollFps * Math.exp(-dt / 2000));
       }
       lastTarget = target;
       lastVelocityAt = now;
@@ -166,19 +206,23 @@
     function fetchInto(tier, i, priority) {
       tier.inFlight.add(i);
       tier.pending++;
-      fetch(tier.url(i), { priority })
+      // A stalled request on a flaky network would hold its slot forever; give up and retry.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), tier.timeout);
+      fetch(tier.url(i), { priority, signal: controller.signal })
         .then((res) => {
           if (!res.ok) throw new Error(`Status ${res.status}`);
           return res.blob();
         })
         .then((blob) => {
+          clearTimeout(timeout);
           tier.pending--;
-          bwBytes += blob.size;
           tier.blobs.set(i, blob);
           if (inWindow(tier, i)) decodeFrame(tier, i);
           pump();
         })
         .catch(() => {
+          clearTimeout(timeout);
           tier.pending--;
           tier.inFlight.delete(i);
           setTimeout(pump, 800);
@@ -203,31 +247,47 @@
 
     function pump() {
       if (!posterLoaded) return;
-      const fast = isFast();
+      const motion = motionTier();
       const resting = velocity < 0.012 && Math.abs(target - playhead) < 2;
 
-      // Sharp tier. On a fast link prefetch well ahead of the playhead. On a slow one,
-      // sharpen only where the visitor stops, so it never starves the preview.
-      if (fast) {
-        fill(full, (isMobile ? 6 : 8) - full.pending, 3, full.fetchAhead, full.fetchBehind, 'high');
-      } else if (resting || preview.inFlight.size >= FRAME_COUNT) {
-        fill(full, 2 - full.pending, 3, 6, 2, 'high');
+      // Whatever carries motion, keep cheap micro frames a step ahead at 1/4 density
+      // and across the whole sequence at 1/8, so a sudden fling always has something.
+      if (motion !== micro && micro.pending < 2) {
+        const left = fill(micro, 2 - micro.pending, 1, 120, 10, 'low');
+        if (left > 0) fill(micro, left, 0, FRAME_COUNT, FRAME_COUNT, 'low');
       }
 
-      // Preview tier carries motion. Cover the stretch the visitor is about to scroll
-      // into at 1/4 then 1/2 density first (an even 15-30 fps beats 8-frame jumps),
-      // then the whole sequence at 1/8 so a jump anywhere has something to show.
-      // While a slow link fetches the sharp frame under a resting view, leave it the bandwidth.
+      // A link fast enough for full frames streams them nearest-first, far ahead.
+      if (motion === full) {
+        fill(full, (isMobile ? 6 : 8) - full.pending, 3, full.fetchAhead, full.fetchBehind, 'high');
+        return;
+      }
+
+      // Otherwise full frames only sharpen a resting view (or everything, once the
+      // motion tier is complete), so they never starve the motion tier.
+      if (motion.inFlight.size >= FRAME_COUNT) {
+        fill(full, 2 - full.pending, 3, 6, 2, 'high');
+      } else if (resting) {
+        fill(full, 1 - full.pending, 3, 0, 0, 'high'); // just the frame on screen
+      }
+
+      // The motion tier covers the stretch the visitor is about to scroll into at
+      // 1/4 then 1/2 density first (an even 15-30 fps beats 8-frame jumps), then the
+      // whole sequence at 1/8 so a jump anywhere has something to show.
+      // While the full frame under a resting view loads, leave it the bandwidth.
       const sharpHere = full.blobs.has(Math.round(playhead));
-      const previewCap = !fast && resting && !sharpHere ? 1 : preview.maxInFlight;
-      let slots = previewCap - preview.pending;
-      if (preview.inFlight.size < FRAME_COUNT) {
-        const lead = Math.max(40, Math.min(300, Math.round(velocity * 4000)));
+      const motionCap = resting && !sharpHere ? 1 : motion.maxInFlight;
+      let slots = motionCap - motion.pending;
+      if (motion.inFlight.size < FRAME_COUNT) {
+        // Small frames are cheap, so look further ahead even at rest: the first scroll
+        // from the top would otherwise outrun what has loaded.
+        const minLead = motion === micro ? 120 : motion === preview ? 60 : 40;
+        const lead = Math.max(minLead, Math.min(300, Math.round(velocity * 4000)));
         const passes = [[1, lead, 10], [2, lead, 10], [0, FRAME_COUNT, FRAME_COUNT],
           [3, lead, 10], [1, FRAME_COUNT, FRAME_COUNT], [3, FRAME_COUNT, FRAME_COUNT]];
         for (const [rank, ahead, behind] of passes) {
           if (slots <= 0) break;
-          slots = fill(preview, slots, rank, ahead, behind, ahead < FRAME_COUNT ? 'high' : 'low');
+          slots = fill(motion, slots, rank, ahead, behind, ahead < FRAME_COUNT ? 'high' : 'low');
         }
       }
     }
@@ -271,16 +331,26 @@
       return null;
     }
 
-    // Exact sharp frame > exact preview > sharp within 2 > nearest preview > nearest sharp.
+    // Draw the frame with the lowest (distance from target + tier penalty): a sharper
+    // frame one step away beats a blurrier exact one. Never a frame farther from the
+    // target than the one already on screen: when nothing closer is loaded, holding
+    // the current image beats jumping backwards.
+    let shownFrame = 1;
+    let shownTier = full;
     function pickFrame(desired) {
-      if (full.bitmaps.has(desired)) return [full, desired];
-      if (preview.bitmaps.has(desired)) return [preview, desired];
-      let f = nearest(full, desired, 2);
-      if (f !== null) return [full, f];
-      f = nearest(preview, desired, FRAME_COUNT);
-      if (f !== null) return [preview, f];
-      f = nearest(full, desired, FRAME_COUNT);
-      return f !== null ? [full, f] : null;
+      let best = null;
+      let bestScore = Infinity;
+      const limit = Math.abs(shownFrame - desired);
+      for (const tier of ladder) {
+        const f = nearest(tier, desired, Math.min(limit, Math.floor(bestScore - tier.penalty)));
+        if (f === null) continue;
+        const score = Math.abs(f - desired) + tier.penalty;
+        if (score < bestScore) {
+          best = [tier, f];
+          bestScore = score;
+        }
+      }
+      return best;
     }
 
     const gpuRenderer = window.createHeroRenderer?.(canvas);
@@ -318,7 +388,8 @@
     // Time-based following behaves consistently on 60/120Hz displays.
     let lastTime = 0;
     let lastMaintenance = 0;
-    // ?herodebug records [desiredFrame, drawnFrame, isSharp] per animation frame.
+    // ?herodebug records [desiredFrame, shownFrame, tier rank (3 full .. 0 micro), time]
+    // per animation frame.
     const debugLog = /herodebug/.test(location.search) ? (window.__heroLog = []) : null;
     function loop(now) {
       const dt = Math.min(50, now - (lastTime || now));
@@ -330,20 +401,27 @@
         updateHeroUI((playhead - 1) / (FRAME_COUNT - 1));
 
         const pick = pickFrame(Math.round(playhead));
-        if (debugLog) debugLog.push([Math.round(playhead), pick ? pick[1] : 0, pick && pick[0] === full ? 1 : 0]);
+        if (debugLog) {
+          const shown = pick || [shownTier, shownFrame];
+          window.__heroBw = Math.round(bandwidth());
+          debugLog.push([Math.round(playhead), shown[1], shown[0].rank, Math.round(now)]);
+        }
         if (pick) {
           const [tier, frame] = pick;
-          const key = `${tier === full ? 'f' : 'p'}${frame}:${canvas.width}:${canvas.height}`;
+          const key = `${tier.rank}:${frame}:${canvas.width}:${canvas.height}`;
           if (key !== lastRenderKey) {
             draw(tier.bitmaps.get(frame));
             lastRenderKey = key;
+            shownFrame = frame;
+            shownTier = tier;
           }
         }
         trackVelocity(now);
-        trackBandwidth(now);
         if (now - lastMaintenance > 24) {
           maintain(full, isMobile ? 3 : 4);
+          maintain(hd, 4);
           maintain(preview, 6);
+          maintain(micro, 8);
           pump();
           lastMaintenance = now;
         }
@@ -434,21 +512,20 @@
             } else gsap.set(reveal,{opacity:0});
           }
       };
-      ScrollTrigger.create({
-        trigger: heroSection,
+      // The hero is held by CSS (position: sticky inside .hero-track), so layout is
+      // final before this script runs; ScrollTrigger only reads progress through it.
+      const heroTrigger = ScrollTrigger.create({
+        trigger: heroSection.parentElement,
         start: 'top top',
-        end: () => `+=${window.innerHeight * (SCROLL_LENGTH_VH / 100 - 1)}`,
-        pin: true,
-        anticipatePin: 1,
-        scrub: 0,
+        end: 'bottom bottom',
         invalidateOnRefresh: true,
         onUpdate: (self) => {
-          const p = self.progress;
-          target = frameAt(p);
-
+          target = frameAt(self.progress);
         }
       });
-      setTimeout(() => ScrollTrigger.refresh(), 300);
+      // A visitor may already be mid-hero when this runs on a slow connection:
+      // start there instead of chasing the playhead up from frame 1.
+      target = playhead = frameAt(heroTrigger.progress);
     }
   }
 

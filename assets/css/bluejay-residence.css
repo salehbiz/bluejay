@@ -34,3 +34,6 @@ html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
 
 /* Scroll reveals (assets/js/animations.js) */
 .bj-site [data-img-curtain],.bj-coast{overflow:hidden}
+
+/* Base font is the site's own; the old template's Garet (117 KB .otf) was only ever a fallback. */
+body{font-family:'Instrument Sans Variable',Arial,sans-serif}

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Re-encode the 60 fps hero sequence into lightweight WebP tiers.
 # Sources: frames/hero/qhd60-desktop (2560x1440 jpg) and frames/hero/hq60-mobile (1080x1920 jpg).
-# Output:  frames/hero60/{desktop,mobile,preview-desktop,preview-mobile}/NNNN.webp + posters.
+# Output:  frames/hero60/{desktop,mobile,hd-*,preview-*,micro-*}/NNNN.webp + posters.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SRC_D=frames/hero/qhd60-desktop
 SRC_M=frames/hero/hq60-mobile
 OUT=frames/hero60
-mkdir -p "$OUT"/{desktop,mobile,preview-desktop,preview-mobile}
+mkdir -p "$OUT"/{desktop,mobile,preview-desktop,preview-mobile,micro-desktop,micro-mobile,hd-desktop,hd-mobile}
 
 encode() { # src dst w h q
   [ -s "$2" ] || cwebp -quiet -q "$5" -m 5 -resize "$3" "$4" "$1" -o "$2"
@@ -18,6 +18,10 @@ frame() {
   encode "$SRC_D/$1.jpg" "$OUT/preview-desktop/$1.webp" 640 360 50
   encode "$SRC_M/$1.jpg" "$OUT/mobile/$1.webp" 720 1280 70
   encode "$SRC_M/$1.jpg" "$OUT/preview-mobile/$1.webp" 270 480 50
+  encode "$SRC_D/$1.jpg" "$OUT/hd-desktop/$1.webp" 1280 720 55
+  encode "$SRC_D/$1.jpg" "$OUT/micro-desktop/$1.webp" 320 180 40
+  encode "$SRC_M/$1.jpg" "$OUT/hd-mobile/$1.webp" 540 960 55
+  encode "$SRC_M/$1.jpg" "$OUT/micro-mobile/$1.webp" 180 320 40
 }
 export -f encode frame
 export SRC_D SRC_M OUT
