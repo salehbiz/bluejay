@@ -52,7 +52,7 @@ const server = http.createServer((req, res) => {
 
   // Edge Early Preload Link header on homepage
   if (urlPath === '/' || urlPath === '/index.html') {
-    headers['Link'] = '</frames/hero60/mobile-poster.webp>; rel=preload; as=image; type=image/webp; media="(max-width: 767px)"; fetchpriority=high, </frames/hero60/poster.webp>; rel=preload; as=image; type=image/webp; media="(min-width: 768px)"; fetchpriority=high';
+    headers['Link'] = "</frames/hero_preview_mobile/frame_0001.webp>; rel=preload; as=image; type=image/webp; media=\"(max-width: 767px), (max-width: 1023px) and (orientation: portrait)\"; fetchpriority=high, </frames/hero_preview_desktop/frame_0001.webp>; rel=preload; as=image; type=image/webp; media=\"(min-width: 1024px), (min-width: 768px) and (orientation: landscape)\"; fetchpriority=high";
   }
 
   // Immutable caching for frame sequences

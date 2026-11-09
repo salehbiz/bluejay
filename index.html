@@ -6,7 +6,7 @@
 <meta content="Discover Villa Blue Jay — an exclusive G+2 6-bedroom beachfront luxury residence on Palm Jebel Ali by Nakheel. Frond E, Unit R084. 7,722 sq ft BUA. AED 25 million." name="description"/>
 <meta content="Villa Blue Jay | Beachfront Luxury Villas on Palm Jebel Ali" property="og:title"/>
 <meta content="Discover Villa Blue Jay — an exclusive G+2 6-bedroom beachfront luxury residence on Palm Jebel Ali by Nakheel. Frond E, Unit R084. 7,722 sq ft BUA. AED 25 million." property="og:description"/>
-<meta content="/frames/hero60/poster.webp" property="og:image"/>
+<meta content="/frames/hero_desktop/frame_0001.webp" property="og:image"/>
 <meta content="Villa Blue Jay | Beachfront Luxury Villas on Palm Jebel Ali" name="twitter:title"/>
 <meta content="Discover Villa Blue Jay — an exclusive G+2 6-bedroom beachfront luxury residence on Palm Jebel Ali by Nakheel. Frond E, Unit R084. 7,722 sq ft BUA. AED 25 million." name="twitter:description"/>
 <meta property="og:type" content="website"/>
@@ -15,19 +15,8 @@
 <link rel="preload" href="/assets/fonts/TheSeasons-Light.woff2" as="font" type="font/woff2" crossorigin=""/>
 <link rel="preload" href="/assets/fonts/PPNeueMontreal-Book.woff2" as="font" type="font/woff2" crossorigin=""/>
 <link href="/assets/css/styles.css" rel="stylesheet" type="text/css"/>
-<script>
-  (function() {
-    var isMob = window.innerWidth < 768;
-    var poster = isMob ? '/frames/hero60/mobile-poster.webp' : '/frames/hero60/poster.webp';
-    var link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'image';
-    link.type = 'image/webp';
-    link.setAttribute('fetchpriority', 'high');
-    link.href = poster;
-    document.head.appendChild(link);
-  })();
-</script>
+<link rel="preload" as="image" href="/frames/hero_preview_mobile/frame_0001.webp" type="image/webp" fetchpriority="high" media="(max-width: 767px), (max-width: 1023px) and (orientation: portrait)"/>
+<link rel="preload" as="image" href="/frames/hero_preview_desktop/frame_0001.webp" type="image/webp" fetchpriority="high" media="(min-width: 1024px), (min-width: 768px) and (orientation: landscape)"/>
 <link href="/assets/icons/Favicon-32x32.svg" rel="shortcut icon" type="image/x-icon"/>
 <link href="/assets/icons/Webclip.svg" rel="apple-touch-icon"/><script type="application/ld+json">{"@context": "https://schema.org", "@type": "House", "name": "Villa Bluejay", "description": "Six-bedroom beachfront villa by SAOTA at Palm Jebel Ali, Dubai.", "numberOfBedrooms": 6, "floorSize": {"@type": "QuantitativeValue", "value": 7722, "unitCode": "FTK"}, "address": {"@type": "PostalAddress", "addressLocality": "Dubai", "addressCountry": "AE"}}</script>
 
@@ -61,17 +50,11 @@
   }
 </style>
 <link rel="stylesheet" href="/assets/css/caesar-sections.css"/>
-<link rel="stylesheet" href="/assets/css/editorial-hero.css"/>
 <link rel="stylesheet" href="/assets/css/bluejay-residence.css"/>
-<style>
-  /* The hero holds its full scroll length from the first paint, before any script runs. */
-  .hero-track { position: relative; height: 1100vh; }
-  .hero-track > .section.mod--hero { position: sticky; top: 0; }
-</style>
+<link rel="stylesheet" href="/assets/css/hero-scrub.css"/>
 <script defer src="/assets/vendor/gsap.min.js"></script>
 <script defer src="/assets/vendor/ScrollTrigger.min.js"></script>
-<script defer src="/assets/js/hero-gpu.js"></script>
-<script defer src="/assets/js/resilient-hero-scrub.js"></script>
+<script defer src="/assets/js/hero-scrub.js"></script>
 </head>
 <body><div class="page-wrapper"><div class="styles ui-embed"><style>
   /*Fluid responsive */
@@ -257,35 +240,52 @@
 </div>
 
 <main class="main">
-<div class="hero-track" data-hero>
-<section class="section mod--hero" style="min-height: 100vh;">
-  <div class="hero__bg" style="overflow: hidden; z-index: 0;">
-    <div id="hero-lqip" style="position: absolute; inset: 0; z-index: 1; pointer-events: none; transition: opacity 0.4s ease-out;"></div>
+<div class="hero-journey" id="hero-journey">
+  <div class="hero-scrub__stage">
+    <div id="hero-lqip"></div>
     <script>
-      (function() {
-        var blur = 'UklGRnAAAABXRUJQVlA4IGQAAACwAwCdASoUAAsAP3Ggxli0q6ejsAgCkC4JbACdAA+WmxABF0ya8AD+MRQYjx3kuh1lBrshlOIZaWR6EVIkZxXmKBpyX0dpuYgt+EnxLWwuhnfTwNbooOBdatSQMdJoTCEkRiAA';
+      (function () {
         var el = document.getElementById('hero-lqip');
-        if (el) {
-          el.style.background = "url('data:image/webp;base64," + blur + "') center/cover no-repeat #000";
-        }
+        var mob = window.matchMedia('(max-width: 767px), (max-width: 1023px) and (orientation: portrait)').matches;
+        var d = mob ? 'UklGRrIAAABXRUJQVlA4IKYAAABQBACdASoOABgAPu1iqU2ppaOiMAgBMB2JbACdMoAC/BbqyzpnmP1ZlxrsAPa63KrKnCT+H0s+IoJqHAnNOfcuIpnkcZPbPI69cu0Qh0trIRp1YxtyJUSoZzxf/v9f06vfLRzI+lztSov99WOKIWxG1P/bB0v5fDAgYouD3B8q5sr87GQpbNU5ddsiR8+0pV3P2Wp2kaeLer+CDJvPvSeStOt4pAAA' : 'UklGRswAAABXRUJQVlA4IMAAAACQBACdASoYAA4APu1iqU2ppaOiMAgBMB2JbACdMoAlrA09RBn3GaXD27Fe5oAA/CkhgvOXAgXN3eG8NcOLUe1QUZm+frRYqbkX4RkOdot+302pdLxphbbJZLxn27eXaquPsO6UleDnQi+MsDvBqr5GAgzGgG5ZL+1oeIcTvILn0oiz8P8zdqdgi9eVo7ZrntznYrEM65FkThBDekV81pc3GvezZDbZsJlCTBxqeGyOkGJfwS50cP2Yzj/9UVlfgAA=';
+        if (el) el.style.backgroundImage = "url('data:image/webp;base64," + d + "')";
       })();
     </script>
     <picture>
-      <source media="(max-width: 767px)" srcset="/frames/hero60/mobile-poster.webp" type="image/webp"/>
-      <img id="hero-scrub-poster" src="/frames/hero60/poster.webp" alt="Villa Blue Jay Beachfront Residence on Palm Jebel Ali" fetchpriority="high" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; opacity: 1; transition: opacity 0.4s ease-out; pointer-events: none; display: block;"/>
+      <source media="(max-width: 767px), (max-width: 1023px) and (orientation: portrait)" srcset="/frames/hero_preview_mobile/frame_0001.webp" type="image/webp"/>
+      <img class="hero-scrub__poster" src="/frames/hero_preview_desktop/frame_0001.webp" alt="Villa Blue Jay, a beachfront residence on Palm Jebel Ali" fetchpriority="high" decoding="async"/>
     </picture>
-    <canvas id="hero-scrub-canvas" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 3; opacity: 0; display: none; transition: opacity 0.4s ease-out; transform: translateZ(0); will-change: transform, opacity;"></canvas>
-    <div class="hero__cinema-overlay" aria-hidden="true"></div>
-    <div class="hero__overlay-top" aria-hidden="true"></div>
-    <div class="hero__overlay-bottom" aria-hidden="true"></div>
+    <canvas class="hero-scrub__canvas" aria-hidden="true"></canvas>
+    <div class="hero-scrub__grain" aria-hidden="true"></div>
+    <div class="hero-scrub__shade" aria-hidden="true"></div>
+    <div class="hero-scrub__overlay">
+      <h1 class="hero-logo">BLUE JAY</h1>
+      <div class="hero-beat" data-beat data-min="0.07" data-max="0.31" aria-hidden="true">
+        <div class="hero-beat__eyebrow"><span class="hero-beat__num">01</span><span class="hero-beat__dot">·</span><span>The island</span></div>
+        <p class="hero-beat__line">A world of your own on <em>Palm Jebel Ali.</em></p>
+      </div>
+      <div class="hero-beat" data-beat data-min="0.32" data-max="0.55" aria-hidden="true">
+        <div class="hero-beat__eyebrow"><span class="hero-beat__num">02</span><span class="hero-beat__dot">·</span><span>The villa</span></div>
+        <p class="hero-beat__line">Six bedrooms by SAOTA. <em>7,722 sq ft built up.</em></p>
+      </div>
+      <div class="hero-beat" data-beat data-min="0.56" data-max="0.77" aria-hidden="true">
+        <div class="hero-beat__eyebrow"><span class="hero-beat__num">03</span><span class="hero-beat__dot">·</span><span>The beach</span></div>
+        <p class="hero-beat__line">Private beachfront living. <em>Frond E, Unit R084.</em></p>
+      </div>
+      <div class="hero-beat" data-beat data-min="0.78" data-max="0.98" aria-hidden="true">
+        <div class="hero-beat__eyebrow"><span class="hero-beat__num">04</span><span class="hero-beat__dot">·</span><span>The residence</span></div>
+        <p class="hero-beat__line">AED 25 million. <em>Viewings by appointment.</em></p>
+      </div>
+      <button type="button" class="hero-scroll-cue" aria-label="Scroll to explore">
+        <span class="hero-scroll-cue__text">Scroll to explore</span>
+        <svg class="hero-scroll-cue__arrow" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2V12M7 12L3 8M7 12L11 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button type="button" class="hero-skip-intro" data-target="welcome" aria-label="Skip the hero intro">
+        <span>Skip intro</span>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1.5V10.5M6 10.5L2.5 7M6 10.5L9.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
   </div>
-  <div class="editorial-hero">
-    <h1 class="editorial-wordmark" aria-label="Blue Jay"><span aria-hidden="true">B</span><span aria-hidden="true">L</span><span aria-hidden="true">U</span><span aria-hidden="true">E</span><span class="wordmark-gap" aria-hidden="true"></span><span aria-hidden="true">J</span><span aria-hidden="true">A</span><span aria-hidden="true">Y</span></h1>
-    <div class="editorial-reveal" aria-hidden="true"><span class="editorial-kicker" id="scene-kicker">01 / The island</span><p><span id="scene-line">A world</span><br><em id="scene-emphasis">of your own.</em></p></div>
-    <div class="editorial-foot"><p>Private beachfront living<br><span>Frond E · R084 · Palm Jebel Ali</span></p><span class="editorial-scroll">Scroll to discover <span>↓</span></span></div>
-    <div class="editorial-progress"><div id="hero-scrub-progress"></div></div>
-  </div>
-</section>
 </div>
 <div class="bj-site">
 <section class="bj-intro bj-wrap" id="welcome">
