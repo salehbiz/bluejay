@@ -560,20 +560,59 @@
     this.track.classList.remove('is-drawn');
   };
 
-  // ---- Overlay (beats, scroll cue, skip intro) --------------------------
-  function bindOverlay(root) {
-    window.__bjHeroBound = true; // the inline fallback click handler in index.html stands down
-    var beats = Array.prototype.slice.call(root.querySelectorAll('[data-beat]')).map(function (el) {
-      return { el: el, min: parseFloat(el.dataset.min), max: parseFloat(el.dataset.max), on: null };
+  // ---- Overlay (editorial wordmark, scene lines, foot, skip intro) -----
+  // The text layer and its motion are the earlier hero's: the display
+  // wordmark eases into the centred top logo over the first quarter screen
+  // of scroll and stays there for the rest of the page; four scene lines
+  // fade in and out bottom left; the foot dims slightly once you scroll.
+  var SCENES = [
+    { start: 0.11, end: 0.27, label: 'Palm Jebel Ali', line: 'Frond E', em: 'Unit R084.' },
+    { start: 0.32, end: 0.48, label: 'Bluejay · Six bedrooms', line: '7,722 sq ft', em: 'built-up area.' },
+    { start: 0.54, end: 0.72, label: 'Private beachfront living', line: '7,589 sq ft', em: 'plot area.' },
+    { start: 0.79, end: 0.99, label: 'Frond E · Unit R084', line: 'AED 25', em: 'million.' }
+  ];
+  function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+  function bindWordmark(reduced) {
+    var wordmark = document.querySelector('.editorial-wordmark');
+    if (!wordmark || reduced || !window.gsap) return;
+    // The stage has will-change: transform, which would trap a fixed child,
+    // so the wordmark moves to the top of <body> (first in reading order).
+    document.body.insertBefore(wordmark, document.body.firstChild);
+    wordmark.classList.add('wordmark-morph');
+    var logoX = 0, logoY = 0, logoScale = 1;
+    function measure() {
+      var targetWidth = window.innerWidth < 768 ? 106 : 126;
+      logoScale = targetWidth / wordmark.offsetWidth;
+      logoX = (window.innerWidth - targetWidth) / 2 - wordmark.offsetLeft;
+      logoY = 25 - wordmark.offsetTop;
+    }
+    measure();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(measure);
+    window.addEventListener('resize', measure);
+    var p = 0;
+    window.gsap.ticker.add(function () {
+      var desired = clamp01(window.scrollY / (window.innerHeight * 0.25));
+      p += (desired - p) * (1 - Math.exp(-window.gsap.ticker.deltaRatio() * 16.667 / 55));
+      if (Math.abs(desired - p) < 0.0001) p = desired;
+      var t = p * p * (3 - 2 * p);
+      window.gsap.set(wordmark, { x: logoX * t, y: logoY * t, scale: 1 + (logoScale - 1) * t, opacity: 1 });
     });
-    var cue = root.querySelector('.hero-scroll-cue');
+  }
+
+  function bindOverlay(root, reduced) {
+    window.__bjHeroBound = true; // the inline fallback click handler in index.html stands down
+    var reveal = root.querySelector('.editorial-reveal');
+    var foot = root.querySelector('.editorial-foot');
+    var kicker = document.getElementById('scene-kicker');
+    var line = document.getElementById('scene-line');
+    var emphasis = document.getElementById('scene-emphasis');
     var skip = root.querySelector('.hero-skip-intro');
-    var cueOn = null;
+    var active = -1;
     var skipOn = null;
 
-    if (cue) cue.addEventListener('click', function () {
-      window.scrollBy({ top: window.innerHeight * 0.75, behavior: 'smooth' });
-    });
+    bindWordmark(reduced);
+
     if (skip) skip.addEventListener('click', function () {
       var next = document.getElementById(skip.dataset.target || '');
       if (next) next.scrollIntoView({ behavior: 'smooth' });
@@ -581,17 +620,27 @@
     });
 
     return function (progress) {
-      for (var i = 0; i < beats.length; i++) {
-        var b = beats[i];
-        var on = progress >= b.min && progress <= b.max;
-        if (on !== b.on) {
-          b.on = on;
-          b.el.classList.toggle('is-active', on);
-          b.el.setAttribute('aria-hidden', on ? 'false' : 'true');
+      if (!reduced) {
+        if (foot) foot.style.opacity = String(1 - 0.2 * clamp01(progress / 0.08));
+        var idx = -1;
+        for (var i = 0; i < SCENES.length; i++) {
+          if (progress >= SCENES[i].start && progress <= SCENES[i].end) { idx = i; break; }
+        }
+        if (idx !== -1) {
+          var sc = SCENES[idx];
+          if (idx !== active) {
+            kicker.textContent = sc.label;
+            line.textContent = sc.line;
+            emphasis.textContent = sc.em;
+            active = idx;
+          }
+          var vis = clamp01((progress - sc.start) / 0.025) * clamp01((sc.end - progress) / 0.025);
+          reveal.style.opacity = String(vis);
+          reveal.style.transform = 'translateY(' + (16 * (1 - vis)).toFixed(2) + 'px)';
+        } else {
+          reveal.style.opacity = '0';
         }
       }
-      var c = progress < 0.05;
-      if (cue && c !== cueOn) { cueOn = c; cue.classList.toggle('is-hidden', !c); cue.tabIndex = c ? 0 : -1; }
       var s = progress <= 0.88;
       if (skip && s !== skipOn) { skipOn = s; skip.classList.toggle('is-hidden', !s); skip.tabIndex = s ? 0 : -1; }
     };
@@ -604,9 +653,8 @@
     var canvas = track.querySelector('.hero-scrub__canvas');
     var poster = track.querySelector('.hero-scrub__poster');
     var grain = track.querySelector('.hero-scrub__grain');
-    var onProgress = bindOverlay(track);
-
     var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var onProgress = bindOverlay(track, reduced);
     if (reduced || !window.ScrollTrigger || !('createImageBitmap' in window)) {
       // Still image: the full-resolution first frame of the right tier.
       track.classList.add('is-static');
