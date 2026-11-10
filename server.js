@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const PORT = process.env.PORT || 4321;
 const ROOT = __dirname;
@@ -60,6 +61,14 @@ const server = http.createServer((req, res) => {
     headers['Cache-Control'] = 'public, max-age=31536000, immutable';
   }
 
+  // Compress text assets the way Vercel does, so local Lighthouse runs match production.
+  if (/\.(html|css|js|json|svg)$/.test(ext) && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+    headers['Content-Encoding'] = 'gzip';
+    headers['Vary'] = 'Accept-Encoding';
+    res.writeHead(200, headers);
+    fs.createReadStream(filePath).pipe(zlib.createGzip()).pipe(res);
+    return;
+  }
   res.writeHead(200, headers);
   fs.createReadStream(filePath).pipe(res);
 });

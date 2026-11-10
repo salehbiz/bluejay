@@ -7,7 +7,7 @@
  *            word by word, from faint + blurred to sharp
  *   images   [data-img-curtain], .bj-coast
  *            frame opens from an inset clip while the image settles from 1.2x
- *   blocks   [data-tag-anim], form button
+ *   blocks   [data-tag-anim]
  *            fade and rise
  *   groups   .bj-stats
  *            each child fades and rises in turn
@@ -34,7 +34,7 @@
     };
 
     pick('[data-title-anim], [words-rotate-in], [data-text-anim]').forEach(function (el) {
-      var split = new SplitText(el, { type: 'words', wordsClass: 'reveal-word' });
+      var split = new SplitText(el, { type: 'words', wordsClass: 'reveal-word', aria: 'none' });
       gsap.fromTo(
         split.words,
         { opacity: 0.1, filter: 'blur(6px)', y: 8 },
@@ -49,7 +49,7 @@
       if (media.length) gsap.fromTo(media, { scale: 1.2 }, { scale: 1, ease: 'none', scrollTrigger: Object.assign({}, st) });
     });
 
-    pick('[data-tag-anim], .contact-form button').forEach(function (el) {
+    pick('[data-tag-anim]').forEach(function (el) {
       if (el.closest('.bj-stats')) return; // animated with its group below
       gsap.fromTo(el, { opacity: 0, y: 40 }, { opacity: 1, y: 0, ease: 'none', scrollTrigger: scrub(el, 'clamp(top bottom)', 'clamp(top 85%)') });
     });

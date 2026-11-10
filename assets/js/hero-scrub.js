@@ -562,6 +562,7 @@
 
   // ---- Overlay (beats, scroll cue, skip intro) --------------------------
   function bindOverlay(root) {
+    window.__bjHeroBound = true; // the inline fallback click handler in index.html stands down
     var beats = Array.prototype.slice.call(root.querySelectorAll('[data-beat]')).map(function (el) {
       return { el: el, min: parseFloat(el.dataset.min), max: parseFloat(el.dataset.max), on: null };
     });

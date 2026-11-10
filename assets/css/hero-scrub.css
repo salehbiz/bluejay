@@ -1,4 +1,6 @@
-/* Blue Jay hero: scroll-scrubbed frame sequence (Vaultfy hero layout). */
+/* Blue Jay hero: scroll-scrubbed frame sequence (Vaultfy hero layout).
+   This file is inlined into <style id="critical-css"> in index.html so the
+   hero paints without a stylesheet round trip. Edit both together. */
 @font-face{font-family:BlueJayThin;src:url('/assets/fonts/PPNeueMontreal-Thin.woff2') format('woff2');font-display:swap}
 
 /* Scroll length in viewport heights. Media queries mirror isMobileLayout()
